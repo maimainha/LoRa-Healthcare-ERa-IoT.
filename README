@@ -1,0 +1,16 @@
+Giới thiệu Dự án:
+Hệ thống cứu hộ y tế sử dụng công nghệ truyền thông LoRa (433MHz) để đảm bảo tín hiệu SOS của bệnh nhân luôn được truyền đi thông suốt ngay cả trong môi trường bệnh viện nhiều vật cản, nơi sóng WiFi không ổn định.
+Dữ liệu được đẩy lên Blynk-cloud giúp nhân viên y tế giám sát trạng thái bệnh nhân tức thời thông qua ứng dụng trên Smartphone.
+
+Tính năng chính:
+Truyền dẫn tầm xa: Sử dụng LoRa SX1278 cho khoảng cách truyền cực xa qua các tầng nhà.
+Cảnh báo tức thời: Thông báo đẩy (Push Notification) qua App Blynk khi có ca cấp cứu.
+Dashboard hiện đại: Giao diện quản lý trực quan cho trạm trực y tá.
+Tối ưu kinh phí: Hệ thống sử dụng 02 bo ESP32 tối ưu cho bài toán IoT Cloud.
+
+
+Cấu trúc mã nguồn
+/Code/Sender_ESP32: Mã nguồn cho khối bệnh nhân (Sender).
+/Code/Gateway_ESP32: Mã nguồn nhận tin và đẩy lên E-Ra Cloud (Receiver).
+LoRa_ERa_Healthcare.html: File HTML Dashboard quản lý kỹ thuật.
+
