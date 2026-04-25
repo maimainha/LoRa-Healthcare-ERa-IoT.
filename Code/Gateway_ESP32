@@ -1,0 +1,185 @@
+/*
+ * PROJECT: LORA HEALTHCARE SYSTEM 
+ * PLATFORM: Blynk IoT 2.0
+ * TÍNH NĂNG: 
+ * - Parsing dữ liệu dạng Room:Level.
+ * - Quản lý đèn 4 phòng (V3-V6) độc lập với bộ đếm ngược.
+ * - Hiển thị 3 cấp độ SOS (V1, V7, V8) kèm nháy LED nếu sóng yếu (RSSI < -110).
+ * - Lưu lịch sử 3 cuộc gọi gần nhất lên V0.
+ * - Còi báo động không chặn (Non-blocking).
+ */
+
+#define BLYNK_TEMPLATE_ID   "TMPL609RLOx5V"
+#define BLYNK_TEMPLATE_NAME "IOTlora"
+#define BLYNK_AUTH_TOKEN    "HaGhXyDReEbQVXvmvVj1PiS65XjSFwzu"
+
+#include <WiFi.h>
+#include <BlynkSimpleEsp32.h>
+#include <SPI.h>
+#include <LoRa.h>
+
+// --- THÔNG TIN WIFI ---
+char ssid[] = "NICE HOUSES 2.1";
+char pass[] = "nicehouses2.1";
+
+const int BUZZER = 15;
+const int ss = 5;
+const int rst = 14;
+const int dio0 = 2;
+
+unsigned long roomTimeouts[4] = {0, 0, 0, 0};
+const int roomVPins[] = {V3, V4, V5, V6}; 
+const String roomNames[] = {"101", "102", "201", "202"};
+
+// --- QUẢN LÝ LỊCH SỬ (V0) ---
+String callHistory[3] = {"---", "---", "---"}; 
+
+// --- QUẢN LÝ TRẠNG THÁI SOS MỚI NHẤT ---
+int currentLevel = 0;
+bool isFar = false;
+unsigned long sosLevelTimeout = 0;
+
+
+unsigned long alarmEndTime = 0;
+unsigned long nextBeepTime = 0;
+bool buzzerState = false;
+
+BlynkTimer timer;
+
+// Cập nhật lịch sử lên V0
+void updateHistory(String room, int level) {
+  callHistory[2] = callHistory[1];
+  callHistory[1] = callHistory[0];
+  callHistory[0] = "P" + room + "-M" + String(level);
+  
+  String historyStr = "1. " + callHistory[0] + " | 2. " + callHistory[1] + " | 3. " + callHistory[2];
+  Blynk.virtualWrite(V0, historyStr);
+}
+
+// Nhấp nhát LED khi sóng yếu (RSSI < -110)
+void handleBlink() {
+  static bool ledState = false;
+  if (isFar && currentLevel > 0 && Blynk.connected()) {
+    ledState = !ledState;
+    int p = (currentLevel == 1) ? V1 : (currentLevel == 2) ? V7 : V8;
+    Blynk.virtualWrite(p, ledState);
+  }
+}
+
+// Xử lý còi báo động theo nhịp SOS
+void runBuzzer() {
+  unsigned long now = millis();
+  if (now < alarmEndTime) {
+    if (now >= nextBeepTime) {
+      buzzerState = !buzzerState;
+      digitalWrite(BUZZER, buzzerState);
+      
+      int onTime, offTime;
+      if (currentLevel == 1) { onTime = 500; offTime = 500; }
+      else if (currentLevel == 2) { onTime = 200; offTime = 200; }
+      else { onTime = 100; offTime = 50; }
+      
+      nextBeepTime = now + (buzzerState ? onTime : offTime);
+    }
+  } else {
+    if (buzzerState) {
+      buzzerState = false;
+      digitalWrite(BUZZER, LOW);
+    }
+  }
+}
+
+// Kiểm tra và tự động tắt đèn 
+void checkSystemTimeouts() {
+  unsigned long now = millis();
+  
+  // Kiểm tra 4 phòng
+  for (int i = 0; i < 4; i++) {
+    if (roomTimeouts[i] > 0 && (now - roomTimeouts[i] > 15000)) {
+      Blynk.virtualWrite(roomVPins[i], 0);
+      roomTimeouts[i] = 0;
+    }
+  }
+
+  // Kiểm tra đèn cấp độ SOS 
+  if (sosLevelTimeout > 0 && (now - sosLevelTimeout > 15000)) {
+    Blynk.virtualWrite(V1, 0); Blynk.virtualWrite(V7, 0); Blynk.virtualWrite(V8, 0);
+    Blynk.virtualWrite(V2, 0); // Tắt đèn trạng thái Buzzer trên App
+    sosLevelTimeout = 0;
+    currentLevel = 0;
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(BUZZER, OUTPUT);
+  
+  WiFi.begin(ssid, pass);
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  
+  Blynk.config(BLYNK_AUTH_TOKEN);
+  Blynk.connect();
+  
+  LoRa.setPins(ss, rst, dio0);
+  if (!LoRa.begin(433E6)) { Serial.println("Loi LoRa!"); while(1); }
+  LoRa.setSyncWord(0xF3);
+
+  
+  timer.setInterval(500, handleBlink);
+  timer.setInterval(1000, checkSystemTimeouts);
+  
+  Blynk.virtualWrite(V0, "Hệ thống sẵn sàng");
+}
+
+void loop() {
+  Blynk.run();
+  timer.run();
+  runBuzzer();
+
+  int packetSize = LoRa.parsePacket();
+  if (packetSize) {
+    String data = "";
+    while (LoRa.available()) { data += (char)LoRa.read(); }
+    
+    int sep = data.indexOf(':');
+    if (sep == -1) return;
+
+    String room = data.substring(0, sep);
+    int level = data.substring(sep + 1).toInt();
+    int rssi = LoRa.packetRssi();
+
+    Serial.printf("\n[NHAN] Phong: %s | Muc: %d | RSSI: %d\n", room.c_str(), level, rssi);
+
+    if (Blynk.connected()) {
+      // 1. Cập nhật lịch sử
+      updateHistory(room, level);
+
+      // 2. Sáng đèn phòng tương ứng (V3-V6)
+      for (int i = 0; i < 4; i++) {
+        if (room == roomNames[i]) {
+          Blynk.virtualWrite(roomVPins[i], 1);
+          roomTimeouts[i] = millis(); // Reset 15s cho riêng phòng này
+          break;
+        }
+      }
+
+      // 3. Hiển thị mức độ (V1, V7, V8)
+      Blynk.virtualWrite(V1, 0); Blynk.virtualWrite(V7, 0); Blynk.virtualWrite(V8, 0);
+      currentLevel = level;
+      isFar = (rssi < -110);
+      sosLevelTimeout = millis();
+
+      if (!isFar) {
+        int p = (level == 1) ? V1 : (level == 2) ? V7 : V8;
+        Blynk.virtualWrite(p, 1);
+      }
+      
+      Blynk.virtualWrite(V2, 1); 
+      Blynk.logEvent("sos_event", "Phòng " + room + " gọi mức " + String(level));
+    }
+
+    // Kích hoạt còi 10s
+    alarmEndTime = millis() + 10000;
+    nextBeepTime = millis();
+  }
+}
