@@ -1,0 +1,100 @@
+/*
+ * PROJECT: LORA HEALTHCARE SYSTEM
+ */
+
+#include <SPI.h>
+#include <LoRa.h>
+
+// Định nghĩa chân và ID phòng
+const int BTN_PINS[] = {4, 21, 22, 27};
+const String ROOM_IDS[] = {"101", "102", "201", "202"};
+
+// Mảng quản lý trạng thái ĐỘC LẬP cho từng phòng
+bool lastBtnState[4] = {HIGH, HIGH, HIGH, HIGH}; 
+int clickCounts[4] = {0, 0, 0, 0};
+unsigned long firstClickTimes[4] = {0, 0, 0, 0};
+
+const unsigned long TOTAL_WINDOW = 20000; // Cửa sổ 20 giây
+
+// Cấu hình chân LoRa RA-02
+const int ss = 5;
+const int rst = 14;
+const int dio0 = 2;
+
+void setup() {
+  Serial.begin(115200);
+  
+  LoRa.setPins(ss, rst, dio0);
+  if (!LoRa.begin(433E6)) {
+    Serial.println("Loi: Module LoRa chua san sang!");
+    while (1);
+  }
+  LoRa.setSyncWord(0xF3); 
+
+  for (int i = 0; i < 4; i++) {
+    pinMode(BTN_PINS[i], INPUT_PULLUP);
+  }
+  
+  Serial.println(">>> He thong san sang!");
+}
+
+void sendSOS(int index, int level) {
+  String room = ROOM_IDS[index];
+  String payload = room + ":" + String(level);
+  
+  Serial.println("\n[SENDING] Phong " + room + " | Muc " + String(level));
+  
+  LoRa.beginPacket();
+  LoRa.print(payload);
+  LoRa.endPacket();
+  
+  // Sau khi gửi xong thì reset bộ đếm 
+  clickCounts[index] = 0;
+  firstClickTimes[index] = 0;
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  for (int i = 0; i < 4; i++) {
+    bool currentState = digitalRead(BTN_PINS[i]);
+
+    // 1.  NHẤN NÚT (Cạnh xuống)
+    if (currentState == LOW && lastBtnState[i] == HIGH) {
+      delay(50); // Debounce
+      
+      if (clickCounts[i] == 0) {
+        firstClickTimes[i] = now;
+        clickCounts[i] = 1;
+      } else {
+        clickCounts[i]++;
+      }
+
+      Serial.print("-> P" + ROOM_IDS[i] + " BAM LAN: " + String(clickCounts[i]));
+      Serial.println(" | CON LAI: " + String((TOTAL_WINDOW - (now - firstClickTimes[i])) / 1000) + "s");
+
+      // CẤP CỨU (Mức 3 - 5 click trở lên)
+      if (clickCounts[i] >= 5) {
+        sendSOS(i, 3);
+      }
+    }
+    lastBtnState[i] = currentState;
+
+    // 2. KIỂM TRA GIỜ CỦA TỪNG PHÒNG
+    if (clickCounts[i] > 0 && (now - firstClickTimes[i] > TOTAL_WINDOW)) {
+      int level = 0;
+      if (clickCounts[i] == 3) level = 1;
+      else if (clickCounts[i] == 4) level = 2;
+      else if (clickCounts[i] >= 5) level = 3;
+
+      if (level > 0) {
+        Serial.println("\n[TIMEOUT] Chot ket qua cho Phong " + ROOM_IDS[i]);
+        sendSOS(i, level);
+      } else {
+        Serial.println("\n[TIMEOUT] P" + ROOM_IDS[i] + " khong du 3 lan bam. Reset.");
+        clickCounts[i] = 0;
+        firstClickTimes[i] = 0;
+      }
+    }
+  }
+}
